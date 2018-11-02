@@ -1,32 +1,355 @@
 ---
-title: "Analytic Story Page 3"
-subtitle: "To Be Determined"
+title: "Analytics Anticipated"
+subtitle: "Data Science In F.W. Taylor's *The Principles of Scientific Management*"
 output:
   word_document:
     reference_docx: "asp3_style_reference.docx"
-    
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup, include=FALSE, results=FALSE, cache=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r load_packages}
+suppressPackageStartupMessages({
+  # Analysis Packages
+  library(magrittr)
+  library(readr)
+  library(tidyverse)
+  library(tidytext)
+  library(widyr)
+  library(NLP)
+  library(tm)
+  library(openNLP)
+  # Visualization Packages
+  library(cowplot)
+  library(extrafont)
+  library(ggplotify)
+  library(ggplot2)
+  library(scales)
+  library(wordcloud)
+})
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r declare_colors}
+docx_colors <- c(
+  text_background_dark1 = rgb(0, 0, 0, maxColorValue = 255),
+  text_background_light1 = rgb(255, 255, 255, maxColorValue = 255),
+  text_background_dark2 = rgb(68, 77, 38, maxColorValue = 255),
+  text_background_light2 = rgb(254, 250, 201, maxColorValue = 255),
+  accent1 = rgb(165, 181, 146, maxColorValue = 255),
+  accent2 = rgb(243, 164, 71, maxColorValue = 255),
+  accent3 = rgb(231, 188, 41, maxColorValue = 255),
+  accent4 = rgb(208, 146, 167, maxColorValue = 255),
+  accent5 = rgb(156, 133, 192, maxColorValue = 255),
+  accent6 = rgb(128, 158, 194, maxColorValue = 255),
+  hyperlink = rgb(142, 88, 182, maxColorValue = 255),
+  followed_hyperlink = rgb(127, 111, 111, maxColorValue = 255)
+)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r declare_fonts}
+docx_fonts <-c(
+  headings = 'Franklin Gothic Medium',
+  body = 'Franklin Gothic Book'
+)
+```
+
+```{r import_fonts}
+if (docx_fonts %in% fonts() %>% all() %>% not()) {
+    warning('Importing fonts... this will take some time!')
+    font_import(prompt = FALSE)
+} else if (docx_fonts %in% fonts() %>% all() %>% not()) {
+    stop('Required fonts not found.')
+}
+```
+
+```{r load_fonts}
+if (.Platform$OS.type != 'windows') {
+    stop('Unsupported operating system.')
+} else if (docx_fonts %in% windowsFonts() %>% all() %>% not()) {
+        loadfonts(device = 'win')
+}
+```
+
+```{r stopwords}
+stopwords_df <- get_stopwords(language = 'en', source = 'smart')
+stopwords <- stopwords_df %>% pull(word)
+```
+
+```{r read_text}
+raw_text <- read_file('ASP3_Taylor_Scientific Management_1911.txt') %>%
+  str_extract(
+    regex('President Roosevelt.*this importance\\?', dotall = TRUE)
+  ) %>%
+  str_replace_all(c(
+    'Mr\\.' = 'Mister',
+    'Carl G\\. Barth' = 'Carl Georg Barth',
+    'Frank B\\. Gilbreth' = 'Frank Bunker Gilbreth',
+    'Myron C\\. Clerk' = 'Myron C Clerk',
+    'E\\. F\\. N\\. Spon' = 'E F N Spon',
+    'Sanfort E\\. Thompson' = 'Sanford Eleazer Thompson',
+    'H\\. L\\. Gantt' = 'Henry Laurence Gantt',
+    'Fred\\. W\\. Taylor' = 'Frederick Winslow Taylor',
+    'Vol\\.' = 'Volume',
+    ' p\\.' = ' paragraph',
+    'i\\.e\\.' = 'id est',
+    '\\[\\*' = '',
+    ']' = '',
+    '\\*' = '',
+    'Footnote:' = '',
+    'd------' = 'damned',
+    '------' = 'expletive',
+    '--' = ' ',
+    'etc\\.,' = 'etcetera,',
+    'etc\\.' = 'etcetera.'
+  ))
+
+texts_df <- data_frame(
+  text = raw_text,
+  text_num = 1
+)
+```
+
+```{r extract_chapters}
+chapters_df <- texts_df %>%
+  unnest_tokens(
+    chapter,
+    text,
+    token = 'regex',
+    pattern = 'CHAPTER I{1,2}\\s+',
+    to_lower = FALSE
+  ) %>%
+  mutate(chapter_num = 0:(length(chapter) - 1))
+```
+
+```{r extract_sections}
+sections_df <- chapters_df %>%
+  unnest_tokens(
+    section,
+    chapter,
+    token = 'regex',
+    pattern = '(?:\\p{Lu}{2,}[ ]?){2,}\\s+',
+    to_lower = FALSE
+  ) %>%
+  mutate(section_num = 1:length(section))
+```
+
+```{r extract_paragraphs}
+paragraphs_df <- sections_df %>%
+  unnest_tokens(
+    paragraph,
+    section,
+    token = 'regex',
+    pattern = '(?:\\r\\n){2}',
+    to_lower = FALSE
+  ) %>%
+  filter(
+    paragraph %>% str_detect('New Plan Task Work') %>% not(),
+    paragraph %>% str_detect('[PV] = ') %>% not(),
+    str_trim(paragraph) != ''
+  ) %>%
+  mutate(paragraph_num = 1:length(paragraph))
+```
+
+```{r extract_sentences}
+sentences_df <- paragraphs_df %>%
+  unnest_tokens(sentence, paragraph, token = 'sentences', to_lower = FALSE) %>%
+  mutate(sentence_num = 1:length(sentence))
+```
+
+```{r recombine_text}
+text <- sentences_df %>%
+  pull(sentence) %>%
+  str_c(collapse = ' ')
+```
+
+```{r annotate_parts_of_speech}
+text_string <- text %>% as.String()
+text_with_sentence_word_annotations <- annotate(
+  text_string,
+  list(Maxent_Sent_Token_Annotator(), Maxent_Word_Token_Annotator())
+)
+text_with_part_of_speech_annotations <- annotate(
+  text_string,
+  Maxent_POS_Tag_Annotator(),
+  text_with_sentence_word_annotations
+)
+annotated_words <- subset(text_with_part_of_speech_annotations, type == 'word')
+parts_of_speech_tags <- map_chr(annotated_words$features, `[[`, 'POS')
+parts_of_speech_nostop_df <- data_frame(
+  word = text_string[annotated_words],
+  part_of_speech = parts_of_speech_tags
+) %>%
+  filter(
+    part_of_speech %>% str_detect('(?:[[:punct:]]|`)') %>% not(),
+    !part_of_speech %in% c('POS', 'MD', 'FW'),
+    word %>% str_detect('\\d+') %>% not()
+  ) %>%
+  mutate(
+    word = word %>% str_to_lower(),
+    word = word %>% str_replace_all('[[:punct:]]', ' '),
+    word = word %>% str_trim(),
+    word = word %>% str_squish()
+  ) %>%
+  anti_join(stopwords_df, by = 'word') %>%
+  mutate(word_num = 1:length(word))
+```
+
+```{r word_correlations}
+word_correlations_df <- parts_of_speech_nostop_df %>%
+  mutate(word_group_num = word_num %/% 10) %>%
+  pairwise_cor(word, word_group_num, method = 'pearson')
+```
+
+```{r parts_of_speech_frequency}
+noun_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'NN') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%  
+  arrange(desc(frequency))
+
+plural_noun_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'NNS') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%
+  arrange(desc(frequency))
+
+adjective_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'JJ') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%
+  arrange(desc(frequency))
+
+comparative_adjective_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'JJ') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%
+  arrange(desc(frequency))
+
+adverb_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'RB') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%
+  arrange(desc(frequency))
+
+comparative_adverb_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'RBR') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%
+  arrange(desc(frequency))
+
+verb_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'VB') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%
+  arrange(desc(frequency))
+
+past_tense_verb_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'VBD') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%
+  arrange(desc(frequency))
+
+gerundive_verb_freqs_df <- parts_of_speech_nostop_df %>%
+  mutate(total = n()) %>%
+  filter(part_of_speech == 'VBG') %>%
+  group_by(word) %>%
+  summarize(count = n(), total = first(total), frequency = count / total) %>%
+  ungroup() %>%
+  arrange(desc(frequency))
+```
+
+Students of analytics might be persuaded by the hype surrounding our
+profession that analytics is something entirely new---a bold vision of the 21st
+century, no less! Frederick Winslow Taylor's *The Principles of Scientific
+Management* should convince us otherwise, and offers us a stark vision of both
+the aspirations and moral quandaries inherent in its pursuit. 
+
+Taylor's work is unquestionably modern. He trusts experiment over tradition. He
+recognizes his employees as individuals, seeking to match them with work suited
+to their temperment and talents. He believes men are driven by incentives, and
+those incentives must be crafted to make best use of each worker. He uses the
+limited tools of his time---slide rules in place of neural networks---to
+seek efficiency in every aspect of his world.
+
+Taylor's *Principles*, however, extend to the treatment of his workers only
+through the veil of his own condescention. Workers, in Taylor's view, are
+either too uneducated or too stupid to understand how to best go about their
+work. Craftsmanship is a symptom of mismanagement: Taylor seeks to separate men
+from their skills as efficiently as possible. His proudest example involves
+causing a man to lift a 92-pound chunk of iron 1,156 times per day---a 280%
+increase in labor---for a 60% increase in pay. Echoing the colonialism common
+among his contemporaries, Taylor even claims that systematic exploitation leads
+to moral improvement of the worker.
+
+Before we castigate Taylor for his views---the ease with which he avoids what
+seems to us the grip of ethical conundra---we might remember that hallmark of
+modernity Taylor lacks: The euphemisms our age uses to disguise its
+indifference. How is Taylor's pig iron handler different from the picker
+walking a warehouse floor, his every movement tracked by sensors more
+precise than any stopwatch? We---our profession---are Taylor's progeny, and
+time will wear away any disguise our language may afford to lay bare that
+common prejudice.
+
+```{r viz, fig.width = 10, fig.height = 5, dpi = 600, fig.cap = caption, results=TRUE}
+caption <- str_c(
+  '**Figure 1**: Word clouds of adjectives and nouns by frequency as ',
+  'identified by the **Apache OpenNLP** toolkit. Stopwords used by Chris ',
+  'Buckley and Gerard Salton in the **SMART** information retrieval system at ',
+  'Cornel University have been removed. Note that word clouds are relatively ',
+  'difficult to interpret and have low information density compared with ',
+  'equivalent sets of bar charts or Cleveland dot plots. Notwithstanding the ',
+  'shortcomings of this visualization, part-of-speech tagging appears highly ',
+  'effective in extracting major themes from *The Principles of Scientific ',
+  'Management*.'
+)
+op <- par(mfrow = c(1, 2))
+set.seed(2)
+with(
+  adjective_freqs_df,
+  wordcloud(
+    word,
+    frequency,
+    min.freq = 0,
+    max.words = 50,
+    rot.per = 0,
+    colors = c(docx_colors[5:10]),
+    fixed.asp = 0,
+    family = docx_fonts['body'] %>% unname()
+  )
+)
+title(main = 'Adjectives', family = docx_fonts['headings'] %>% unname())
+set.seed(2)
+with(
+  noun_freqs_df,
+  wordcloud(
+    word,
+    frequency,
+    min.freq = 0,
+    max.words = 50,
+    rot.per = 0,
+    colors = c(docx_colors[5:10]),
+    fixed.asp = 0,
+    family = docx_fonts['body'] %>% unname()
+  )
+)
+title(main = 'Nouns', family = docx_fonts['headings'] %>% unname())
+par(op)
+```
